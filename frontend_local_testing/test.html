@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Secure SSO Test Console</title>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://alcdn.msauth.net/browser/2.33.0/js/msal-browser.min.js"></script>
+  <style>
+    body { background: #121212; color: #eee; font-family: monospace; padding: 2em; }
+    section { border: 1px solid #333; margin: 1em 0; padding: 1em; border-radius: 8px; }
+    button { margin: 0.5em 0; padding: 0.5em 1em; border-radius: 4px; border: none; background: #4caf50; color: #fff; cursor: pointer; }
+    button:hover { background: #45a049; }
+    pre { background: #1e1e1e; padding: 1em; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Secure SSO Test Console</h1>
+
+  <!-- JWT Display -->
+  <section>
+    <h2>JWT</h2>
+    <pre id="jwtOutput">Not logged in</pre>
+  </section>
+
+  <!-- Google Login -->
+  <section>
+    <h2>Login with Google</h2>
+    <div id="g_id_onload"
+         data-client_id="567491030381-7kf694u26if0vpo8bfveei2ghu4je0r2.apps.googleusercontent.com"
+         data-context="signin"
+         data-callback="handleGoogleResponse"
+         data-auto_prompt="false">
+    </div>
+    <div class="g_id_signin" data-type="standard"></div>
+  </section>
+
+  <!-- Microsoft Login -->
+  <section>
+    <h2>Login with Microsoft</h2>
+    <button onclick="loginMicrosoft()">Sign in with Microsoft</button>
+  </section>
+
+  <script>
+    const API_BASE = "http://localhost:8000/api";
+    let jwtToken = null;
+
+    // ---------------- Google ----------------
+    async function handleGoogleResponse(response) {
+      const token = response.credential; // real Google ID token
+      try {
+        const resp = await fetch(`${API_BASE}/auth/sso-login`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ provider: "google", token })
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+          jwtToken = data.access_token;
+          document.getElementById("jwtOutput").textContent = jwtToken;
+        } else {
+          alert("Login failed: " + JSON.stringify(data));
+        }
+      } catch (err) {
+        console.error(err);
+        alert("Error calling backend");
+      }
+    }
+
+    // ---------------- Microsoft ----------------
+    const msalConfig = {
+      auth: {
+        clientId: "YOUR_MICROSOFT_CLIENT_ID",
+        authority: "https://login.microsoftonline.com/common",
+        redirectUri: window.location.origin
+      }
+    };
+    const msalInstance = new msal.PublicClientApplication(msalConfig);
+
+    async function loginMicrosoft() {
+      try {
+        const loginResponse = await msalInstance.loginPopup({
+          scopes: ["openid", "profile", "email", "User.Read"]
+        });
+        const account = loginResponse.account;
+        const tokenResponse = await msalInstance.acquireTokenSilent({
+          scopes: ["openid", "profile", "email", "User.Read"],
+          account
+        });
+        const token = tokenResponse.accessToken;
+
+        // Send token to backend for verification
+        const resp = await fetch(`${API_BASE}/auth/sso-login`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ provider: "microsoft", token })
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+          jwtToken = data.access_token;
+          document.getElementById("jwtOutput").textContent = jwtToken;
+        } else {
+          alert("Login failed: " + JSON.stringify(data));
+        }
+      } catch (err) {
+        console.error(err);
+        alert("Microsoft login failed");
+      }
+    }
+  </script>
+</body>
+</html>
