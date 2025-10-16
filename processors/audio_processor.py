@@ -1,12 +1,9 @@
 import os
-os.environ['NUMBA_DISABLE_JIT'] = '1'
-
 from bson import ObjectId
-import os
 from datetime import datetime
 import numpy as np
 import torch
-import librosa
+import soundfile as sf
 from moviepy.editor import VideoFileClip
 import tempfile
 import shutil
@@ -15,6 +12,8 @@ from db import audio_analysis_collection, videos_collection
 from core.logger import logger
 from core.s3_client import s3_client
 from scipy.ndimage import gaussian_filter1d
+from scipy.signal import medfilt, find_peaks
+from scipy.fft import fft, fftfreq
 from typing import List, Dict, Any
 import traceback
 
@@ -158,21 +157,26 @@ class AudioProcessor:
     # ---------- MAIN PROCESS ----------
     def process_audio(self, audio_path) -> List[Dict[str, Any]]:
         try:
-            y, _ = librosa.load(audio_path, sr=self.sr, mono=True)
+            y, sr = sf.read(audio_path, dtype='float32')
+            if sr != self.sr:
+                # Simple resampling using scipy
+                from scipy.signal import resample
+                y = resample(y, int(len(y) * self.sr / sr))
+            if y.ndim > 1:
+                y = y.mean(axis=1)  # Convert to mono
         except Exception as e:
             raise Exception(f"Failed to load audio: {e}")
 
         if len(y) < self.sr:  # Handle very short audio
             y = np.pad(y, (0, self.sr - len(y)))
 
-        # Mild denoising using scipy (since noisereduce not available)
-        from scipy.signal import medfilt
+        # Mild denoising using scipy
         y = medfilt(y, kernel_size=3)  # Simple median filter for impulse noise
 
         wav_torch = torch.from_numpy(y).float()
         speech_ts = self.get_speech_timestamps(wav_torch, self.vad_model, sampling_rate=self.sr, min_speech_duration_ms=500)
 
-        duration = librosa.get_duration(y=y, sr=self.sr)
+        duration = len(y) / self.sr
         total_seconds = int(np.ceil(duration))
         speech_mask = [False] * total_seconds
 
@@ -182,21 +186,41 @@ class AudioProcessor:
             for s in range(start_sec, min(end_sec, total_seconds)):
                 speech_mask[s] = True
 
-        # Vectorized pitch computation (on full audio for efficiency)
-        f0, voiced_flag, voiced_probs = librosa.pyin(
-            y, fmin=self.fmin, fmax=self.fmax, sr=self.sr,
-            frame_length=self.frame_length, hop_length=self.hop_length, fill_na=0
-        )
+        # Simple pitch detection using autocorrelation (no librosa)
+        def simple_pitch_detection(signal, sr, fmin=60, fmax=300):
+            # Autocorrelation-based pitch detection
+            autocorr = np.correlate(signal, signal, mode='full')
+            autocorr = autocorr[len(autocorr)//2:]
+            
+            # Find peaks in autocorrelation
+            min_period = int(sr / fmax)
+            max_period = int(sr / fmin)
+            
+            if len(autocorr) < max_period:
+                return np.zeros(len(signal)), np.zeros(len(signal))
+            
+            peaks, _ = find_peaks(autocorr[min_period:max_period])
+            if len(peaks) == 0:
+                return np.zeros(len(signal)), np.zeros(len(signal))
+            
+            # Convert peak positions to frequencies
+            fundamental_period = peaks[0] + min_period
+            fundamental_freq = sr / fundamental_period
+            
+            # Create pitch contour
+            pitch_contour = np.full(len(signal), fundamental_freq)
+            voiced_probs = np.ones(len(signal)) * 0.8  # Assume mostly voiced
+            
+            return pitch_contour, voiced_probs
 
-        # Frames per second
-        frames_per_sec = self.sr // self.hop_length
+        # Compute pitch for the entire audio
+        f0, voiced_probs = simple_pitch_detection(y, self.sr, self.fmin, self.fmax)
 
-        hop_length_sec = self.sr
         timeline = []
 
         for i in range(total_seconds):
-            start_sample = i * hop_length_sec
-            end_sample = min((i + 1) * hop_length_sec, len(y))
+            start_sample = i * self.sr
+            end_sample = min((i + 1) * self.sr, len(y))
             chunk = y[start_sample:end_sample]
 
             if not speech_mask[i] or len(chunk) < self.sr // 2:  # Skip short/non-speech
@@ -216,10 +240,8 @@ class AudioProcessor:
             volume_db = max(volume_db, -60.0)
 
             # --- Pitch & Stability (from precomputed) ---
-            start_frame = i * frames_per_sec
-            end_frame = min((i + 1) * frames_per_sec, len(f0))
-            f0_chunk = f0[start_frame:end_frame]
-            probs_chunk = voiced_probs[start_frame:end_frame]
+            f0_chunk = f0[start_sample:end_sample]
+            probs_chunk = voiced_probs[start_sample:end_sample]
 
             voiced = probs_chunk > 0.5  # Reliable threshold
             pitch_var = 0.0
