@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks,Depends
 from bson import ObjectId
 
-from db import videos_collection
+from db import videos_collection, users_collection, orgs_collection
 from processors.audio_processor import process_video_audio
 from processors.text_processor import process_video_text
 from processors.visual_processor import process_visual_analysis
@@ -9,16 +9,28 @@ from settings import settings
 from core.auth import get_current_user
 router = APIRouter()
 
-# --- Process audio ---
-@router.post("/{video_id}/process/audio", summary="Trigger audio analysis")
-async def process_audio(video_id: str, background_tasks: BackgroundTasks,user=Depends(get_current_user)):
+async def verify_video_access(video_id: str, user: dict):
+    """Verify user has access to video - only users can process videos"""
+    # ✅ RBAC: Only users can process videos (admins/superadmins manage the system)
+    if user["role"] != "user":
+        raise HTTPException(status_code=403, detail="Only users can process videos. Admins and superadmins manage the system.")
+    
     video = videos_collection.find_one({"_id": ObjectId(video_id)})
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
-
+    
+    # Users can only process their own videos
     if video["user_email"] != user["email"]:
         raise HTTPException(status_code=403, detail="Not authorized to access this video")
+    
+    return video
 
+# --- Process audio ---
+@router.post("/{video_id}/process/audio", summary="Trigger audio analysis")
+async def process_audio(video_id: str, background_tasks: BackgroundTasks,user=Depends(get_current_user)):
+    # ✅ RBAC: Verify access
+    video = await verify_video_access(video_id, user)
+    
     # Check if already processing or completed
     if video.get("status_audio") in ["processing", "completed"]:
         raise HTTPException(status_code=400, detail=f"Audio processing already {video['status_audio']}")
@@ -39,11 +51,9 @@ async def process_audio(video_id: str, background_tasks: BackgroundTasks,user=De
 # --- Process text ---
 @router.post("/{video_id}/process/text", summary="Trigger text analysis")
 async def process_text(video_id: str, background_tasks: BackgroundTasks, user=Depends(get_current_user)):
-    video = videos_collection.find_one({"_id": ObjectId(video_id)})
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
-    if video["user_email"] != user["email"]:
-        raise HTTPException(status_code=403, detail="Not authorized to access this video")
+    # ✅ RBAC: Verify access
+    video = await verify_video_access(video_id, user)
+    
     # Check if already processing or completed
     if video.get("status_text") in ["processing", "completed"]:
         raise HTTPException(status_code=400, detail=f"Text processing already {video['status_text']}")
@@ -64,13 +74,9 @@ async def process_text(video_id: str, background_tasks: BackgroundTasks, user=De
 # --- Process image ---
 @router.post("/{video_id}/process/image", summary="Trigger image analysis")
 async def process_image(video_id: str, background_tasks: BackgroundTasks,user=Depends(get_current_user)):
-    video = videos_collection.find_one({"_id": ObjectId(video_id)})
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    if video["user_email"] != user["email"]:
-        raise HTTPException(status_code=403, detail="Not authorized to access this video")
-
+    # ✅ RBAC: Verify access
+    video = await verify_video_access(video_id, user)
+    
     # Check if already processing or completed
     if video.get("status_image") in ["processing", "completed"]:
         raise HTTPException(status_code=400, detail=f"Image processing already {video['status_image']}")

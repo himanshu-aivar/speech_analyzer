@@ -1,28 +1,34 @@
 from fastapi import APIRouter, HTTPException,Depends
 from bson import ObjectId
 
-from db import audio_analysis_collection, text_analysis_collection, image_analysis_collection,videos_collection
+from db import audio_analysis_collection, text_analysis_collection, image_analysis_collection,videos_collection, users_collection
 from core.auth import get_current_user
 router = APIRouter()
 
 
-def verify_video_ownership(video_id: str, user: dict):
+def verify_video_access(video_id: str, user: dict):
+    """Verify user has access to video - only users can view results"""
+    # ✅ RBAC: Only users can view results (admins/superadmins manage the system)
+    if user["role"] != "user":
+        raise HTTPException(status_code=403, detail="Only users can view results. Admins and superadmins manage the system.")
+    
     if not ObjectId.is_valid(video_id):
         raise HTTPException(status_code=400, detail="Invalid video ID")
 
     video = videos_collection.find_one({"_id": ObjectId(video_id)})
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
-
+    
+    # Users can only access their own videos
     if video["user_email"] != user["email"]:
         raise HTTPException(status_code=403, detail="Not authorized to access this video")
-
+    
     return video
 
 # --- Audio results ---
 @router.get("/{video_id}/results/audio", summary="Get audio analysis results")
 async def get_audio_results(video_id: str, user=Depends(get_current_user)):
-    video = verify_video_ownership(video_id, user)
+    video = verify_video_access(video_id, user)
 
     status = video.get("status_audio", "pending")
     if status == "pending":
@@ -46,7 +52,7 @@ async def get_audio_results(video_id: str, user=Depends(get_current_user)):
 # --- Text results ---
 @router.get("/{video_id}/results/text", summary="Get text analysis results")
 async def get_text_results(video_id: str, user=Depends(get_current_user)):
-    video = verify_video_ownership(video_id, user)
+    video = verify_video_access(video_id, user)
 
     status = video.get("status_text", "pending")
     if status == "pending":
@@ -71,7 +77,7 @@ async def get_text_results(video_id: str, user=Depends(get_current_user)):
 # --- Image results ---
 @router.get("/{video_id}/results/image", summary="Get image analysis results")
 async def get_image_results(video_id: str, user=Depends(get_current_user)):
-    video = verify_video_ownership(video_id, user)
+    video = verify_video_access(video_id, user)
 
     status = video.get("status_image", "pending")
     if status == "pending":

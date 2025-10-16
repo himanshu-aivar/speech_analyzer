@@ -45,7 +45,7 @@ if __name__ == "__main__":
         "email": "himanshugoyal000043@gmail.com",
         "name": "Himanshu Goyal",
         "image": "https://lh3.googleusercontent.com/a/ACg8ocLo1HVS_4Ru-QO6_PWiIKDsBmWQGDRZb1RCnTguEdII2LMDNQ=s96-c",
-        "role": "admin",
+        "role": "user",
     }
     token = create_jwt(test_user)
     print("Generated JWT:", token)
