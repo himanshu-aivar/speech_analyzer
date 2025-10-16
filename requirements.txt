@@ -30,7 +30,7 @@ silero_vad
 # ==========================
 openai
 assemblyai
-torchcodec
+
 
 
 # ==========================
@@ -44,3 +44,4 @@ python-multipart
 # ==========================
 moviepy==1.0.3
 opencv-python
+soundfile

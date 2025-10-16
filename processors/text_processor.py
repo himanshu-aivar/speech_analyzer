@@ -1,4 +1,3 @@
-
 from bson import ObjectId
 from datetime import datetime
 import numpy as np
@@ -12,9 +11,6 @@ from core.logger import logger
 from core.s3_client import s3_client
 from settings import settings
 import torch
-import torchaudio
-from pydub import AudioSegment
-
 
 class TextProcessor:
     def get_transcript(self, s3_url: str) -> Dict:
@@ -272,50 +268,18 @@ class TextProcessor:
         if audio_duration == 0 and words_info:
             audio_duration = words_info[-1]["end"] / 1000.0
 
-        # Download audio from S3
-        parsed = urlparse(transcript.get("audio_url", "")) if transcript.get("audio_url") else None
-        local_video_path = "/tmp/temp_audio.mp4"
-        local_audio_path = "/tmp/temp_audio.wav"
-        if parsed:
-            bucket = parsed.netloc.split('.')[0]
-            key = parsed.path.lstrip('/')
-            presigned_url = s3_client.generate_presigned_url(
-                ClientMethod="get_object",
-                Params={"Bucket": bucket, "Key": key},
-                ExpiresIn=3600,
-            )
-            r = requests.get(presigned_url)
-            with open(local_video_path, "wb") as f:
-                f.write(r.content)
-
-            # Convert MP4 -> WAV, mono, 16kHz
-            audio = AudioSegment.from_file(local_video_path)
-            audio = audio.set_channels(1).set_frame_rate(16000)
-            audio.export(local_audio_path, format="wav")
-
-        # Load WAV safely
-        torchaudio.set_audio_backend("sox_io")
-        wav, sr = torchaudio.load(local_audio_path)
-
-        # Silero VAD
-        model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad', force_reload=False)
-        get_speech_timestamps = utils[0]
-        speech_timestamps = get_speech_timestamps(wav, model, sampling_rate=sr)
-
-        # Detect pauses
+        # Detect pauses directly from transcript gaps to avoid media decode issues
         pauses = []
         prev_end = 0.0
-        for seg in speech_timestamps:
-            start, end = seg['start'], seg['end']
-            start_sec = start / sr
-            end_sec = end / sr
+        for w in words_info:
+            start_sec = float(w.get("start", 0)) / 1000.0
             if start_sec - prev_end > 0.3:
                 pauses.append({
                     "start_time": round(prev_end, 2),
                     "end_time": round(start_sec, 2),
                     "duration": round(start_sec - prev_end, 2)
                 })
-            prev_end = end_sec
+            prev_end = float(w.get("end", prev_end * 1000)) / 1000.0
 
         # Classify pauses
         long_pause_threshold = 2.0
